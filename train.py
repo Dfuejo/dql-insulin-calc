@@ -12,7 +12,7 @@ from dataclasses import replace
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.append(str(PROJECT_ROOT / "src"))
 
-from agents import DQNConfig, evaluate_policy, plot_glucose_traces, train_dqn  # noqa: E402
+from agents import DQNConfig, evaluate_policy, plot_glucose_traces, train_dqn, save_policy  # noqa: E402
 from env import EnvParams, InsulinEnv  # noqa: E402
 
 
@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         choices=["auto", "cpu", "mps", "cuda"],
         help="Compute device preference. 'auto' tries mps->cuda->cpu.",
+    )
+    parser.add_argument(
+        "--save-checkpoint",
+        type=str,
+        default=None,
+        help="Optional path to save policy network state_dict after training.",
     )
     return parser.parse_args()
 
@@ -113,6 +119,10 @@ def main() -> None:
         print(f"Saved evaluation glucose plot to {output_path}")
     except ImportError:
         print("matplotlib not installed; skipping glucose plot.")
+
+    if args.save_checkpoint:
+        save_policy(agent, args.save_checkpoint)
+        print(f"Saved policy checkpoint to {args.save_checkpoint}")
 
 
 if __name__ == "__main__":

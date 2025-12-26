@@ -8,7 +8,7 @@ from .dqn_agent import (
     save_policy,
     train_dqn,
 )
-from .metrics import compute_range_metrics
+from .metrics import compute_range_metrics, excursion_stats
 from .plotting import plot_glucose_traces
 from .replay_buffer import ReplayBuffer, Transition
 
@@ -21,6 +21,7 @@ __all__ = [
     "save_policy",
     "load_policy",
     "compute_range_metrics",
+    "excursion_stats",
     "plot_glucose_traces",
     "ReplayBuffer",
     "Transition",

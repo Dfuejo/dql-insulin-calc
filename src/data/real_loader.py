@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+import xml.etree.ElementTree as ET
+
 
 @dataclass
 class RealDatasetConfig:
@@ -113,4 +115,100 @@ def load_cgm_csv(path: str | Path, cfg: Optional[RealDatasetConfig] = None) -> L
     return episodes
 
 
-__all__ = ["RealDatasetConfig", "load_cgm_csv"]
+def _parse_ts(ts: str) -> dt.datetime:
+    # Ohio dataset format: dd-mm-YYYY HH:MM:SS
+    return dt.datetime.strptime(ts, "%d-%m-%Y %H:%M:%S")
+
+
+def load_ohio_xml(
+    path: str | Path, max_gap_minutes: float = 30.0, carb_absorption_per_min: float = 0.01
+) -> List[List[Dict]]:
+    """
+    Load OhioT1DM-style XML (glucose_level, meal, bolus sections) into episodes.
+    """
+    tree = ET.parse(path)
+    root = tree.getroot()
+
+    glucose_events = []
+    for ev in root.findall("./glucose_level/event"):
+        ts = ev.get("ts")
+        val = ev.get("value")
+        if ts is None or val is None:
+            continue
+        glucose_events.append({"timestamp": _parse_ts(ts), "glucose": float(val)})
+    glucose_events.sort(key=lambda r: r["timestamp"])
+
+    meal_events = []
+    for ev in root.findall("./meal/event"):
+        ts = ev.get("ts")
+        carbs = ev.get("carbs")
+        if ts is None or carbs is None:
+            continue
+        meal_events.append({"timestamp": _parse_ts(ts), "carbs": float(carbs)})
+    meal_events.sort(key=lambda r: r["timestamp"])
+
+    bolus_events = []
+    for ev in root.findall("./bolus/event"):
+        ts = ev.get("ts_begin") or ev.get("ts")
+        dose = ev.get("dose")
+        if ts is None or dose is None:
+            continue
+        bolus_events.append({"timestamp": _parse_ts(ts), "insulin": float(dose)})
+    bolus_events.sort(key=lambda r: r["timestamp"])
+
+    episodes: List[List[Dict]] = []
+    current: List[Dict] = []
+    prev_time: Optional[dt.datetime] = None
+    prev_glucose: Optional[float] = None
+    active_carbs = 0.0
+
+    meal_idx = 0
+    bolus_idx = 0
+
+    for g in glucose_events:
+        ts = g["timestamp"]
+        if prev_time is not None:
+            delta_min = (ts - prev_time).total_seconds() / 60.0
+            if delta_min > max_gap_minutes:
+                if current:
+                    episodes.append(current)
+                current = []
+                active_carbs = 0.0
+                prev_glucose = None
+            decay = math.exp(-carb_absorption_per_min * max(delta_min, 0.0))
+            active_carbs *= decay
+        else:
+            delta_min = 5.0
+
+        while meal_idx < len(meal_events) and meal_events[meal_idx]["timestamp"] <= ts:
+            active_carbs += meal_events[meal_idx]["carbs"]
+            meal_idx += 1
+
+        insulin = 0.0
+        while bolus_idx < len(bolus_events) and bolus_events[bolus_idx]["timestamp"] <= ts:
+            insulin += bolus_events[bolus_idx]["insulin"]
+            bolus_idx += 1
+
+        glucose = g["glucose"]
+        dG = 0.0 if prev_glucose is None else glucose - prev_glucose
+
+        rec = {
+            "timestamp": ts,
+            "glucose": glucose,
+            "dG": dG,
+            "carbs": 0.0,
+            "insulin": insulin,
+            "active_carbs": active_carbs,
+            "delta_min": delta_min,
+        }
+        current.append(rec)
+        prev_time = ts
+        prev_glucose = glucose
+
+    if current:
+        episodes.append(current)
+
+    return episodes
+
+
+__all__ = ["RealDatasetConfig", "load_cgm_csv", "load_ohio_xml"]
