@@ -7,6 +7,13 @@ from typing import Deque, Tuple
 import numpy as np
 import torch
 
+"""Simple experience replay buffer for DQN agent.
+Stores transitions and allows sampling random batches.
+Transition = (state, action, reward, next_state, done)
+
+The Neural Network waits until enough samples are collected ( min_buffer_size ) before training begins
+Then the agent samples batches of transitions from the buffer to update the Q-network to break correlation between consecutive samples.
+"""
 
 @dataclass
 class Transition:
@@ -18,7 +25,6 @@ class Transition:
 
 
 class ReplayBuffer:
-    """Simple experience replay buffer."""
 
     def __init__(self, capacity: int):
         self.capacity = capacity
@@ -36,6 +42,7 @@ class ReplayBuffer:
         next_states = [t.next_state for t in transitions]
         dones = [t.done for t in transitions]
 
+        
         return (
             torch.as_tensor(np.stack(states), dtype=torch.float32),
             torch.as_tensor(actions, dtype=torch.int64),

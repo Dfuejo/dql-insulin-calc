@@ -25,6 +25,7 @@ import numpy as np
 
 @dataclass
 class EnvParams:
+
     """Configurable hyperparameters for the environment."""
 
     target_glucose: float = 110.0

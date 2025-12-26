@@ -10,6 +10,8 @@ from typing import Dict, Iterable, List, Optional
 
 @dataclass
 class RealDatasetConfig:
+    """Configuration for loading real CGM/meal/insulin datasets from CSV files."""
+
     time_col: str = "timestamp"
     glucose_col: str = "glucose_mg_dl"
     carbs_col: str = "carbs_g"  # optional; set to "" if unavailable
@@ -44,6 +46,7 @@ def load_cgm_csv(path: str | Path, cfg: Optional[RealDatasetConfig] = None) -> L
 
     with path.open() as f:
         reader = csv.DictReader(f)
+        
         for row in reader:
             try:
                 glucose = float(row.get(cfg.glucose_col, "") or "nan")

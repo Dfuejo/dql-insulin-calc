@@ -59,6 +59,10 @@ using a synthetic environment.
   ```bash
   python evaluate_real.py --csv path/to/data.csv --checkpoint policy.pt --rollout-episodes 5 --sim-plot-path plots/real_sim_eval.png
   ```
+- OhioT1DM XML is supported with `--format ohio-xml` (auto-detected on `.xml`):
+  ```bash
+  python evaluate_real.py --csv datasets/archiveOhio/559-ws-training.xml --format ohio-xml --plot-path plots/ohio_eval.png
+  ```
 
 ## Code layout
 

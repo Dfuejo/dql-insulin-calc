@@ -1,10 +1,5 @@
 """
-Lightweight training harness for the insulin DQN.
-
-Run with:
-    python train.py
-
-You can tweak hyperparameters in DQNConfig or EnvParams as needed.
+Lightweight training harness for the DQN.
 """
 
 from __future__ import annotations
@@ -43,12 +38,6 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         choices=["auto", "cpu", "mps", "cuda"],
         help="Compute device preference. 'auto' tries mps->cuda->cpu.",
-    )
-    parser.add_argument(
-        "--save-checkpoint",
-        type=str,
-        default=None,
-        help="Optional path to save policy network state_dict after training.",
     )
     return parser.parse_args()
 
@@ -124,12 +113,6 @@ def main() -> None:
         print(f"Saved evaluation glucose plot to {output_path}")
     except ImportError:
         print("matplotlib not installed; skipping glucose plot.")
-
-    if args.save_checkpoint:
-        from agents import save_policy
-
-        save_policy(agent, args.save_checkpoint)
-        print(f"Saved policy checkpoint to {args.save_checkpoint}")
 
 
 if __name__ == "__main__":

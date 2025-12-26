@@ -23,14 +23,14 @@ from agents import (  # noqa: E402
     evaluate_policy,
     load_policy,
     plot_glucose_traces,
-)
-from data import RealDatasetConfig, load_cgm_csv  # noqa: E402
+)  # noqa: E402
+from data import RealDatasetConfig, load_cgm_csv, load_ohio_xml  # noqa: E402
 from env import EnvParams, InsulinEnv  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Offline evaluation on real CGM logs.")
-    parser.add_argument("--csv", required=True, help="Path to CGM/meal/insulin CSV.")
+    parser.add_argument("--csv", required=True, help="Path to CGM/meal/insulin CSV or Ohio XML.")
     parser.add_argument("--episodes", type=int, default=None, help="Limit number of episodes to use.")
     parser.add_argument(
         "--checkpoint",
@@ -63,13 +63,31 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "cpu", "mps", "cuda"],
         help="Compute device for policy eval (if checkpoint provided).",
     )
+    parser.add_argument(
+        "--format",
+        type=str,
+        default="auto",
+        choices=["auto", "csv", "ohio-xml"],
+        help="File format; auto infers from extension.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     cfg = RealDatasetConfig()
-    episodes = load_cgm_csv(args.csv, cfg)
+    path = pathlib.Path(args.csv)
+    fmt = args.format
+    if fmt == "auto":
+        if path.suffix.lower() == ".xml":
+            fmt = "ohio-xml"
+        else:
+            fmt = "csv"
+
+    if fmt == "ohio-xml":
+        episodes = load_ohio_xml(path)
+    else:
+        episodes = load_cgm_csv(path, cfg)
     if args.episodes:
         episodes = episodes[: args.episodes]
 
