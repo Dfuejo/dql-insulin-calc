@@ -15,6 +15,7 @@ from .replay_buffer import ReplayBuffer, Transition
 def _device_or_default(device: Optional[str] = None) -> torch.device:
     """
     Choose device with preference: user-specified -> MPS -> CUDA -> CPU.
+    My machine is MPS-capable, so I want to test that path
     """
     if device:
         return torch.device(device)
@@ -45,34 +46,48 @@ class QNetwork(nn.Module):
 
 @dataclass
 class DQNConfig:
+
+    # Q-learning hyperparameters
     gamma: float = 0.99
     lr: float = 1e-3
-    batch_size: int = 64
-    buffer_size: int = 50_000
-    min_buffer_size: int = 1_000
-    target_update_interval: int = 500
-    target_tau: float = 1.0  # 1.0 => hard update, <1 => soft update
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
     epsilon_decay: int = 10_000
+
+    # Replay buffer parameters
+    batch_size: int = 64
+    buffer_size: int = 50_000
+    min_buffer_size: int = 1_000
+    
+    # Target network update parameters
+    target_update_interval: int = 500
+    target_tau: float = 1.0  # 1.0 => hard update, <1 => soft update
     hidden_sizes: Tuple[int, ...] = (128, 128)
     max_episodes: int = 500
     max_steps_per_episode: Optional[int] = None
-    log_interval: int = 10
+    log_interval: int = 10 # log every n episodes
     device: Optional[str] = None
     gradient_clip_norm: Optional[float] = 1.0
-    use_double_dqn: bool = True
     target_low: float = 70.0
     target_high: float = 180.0
 
+    # Double DQN flag 
+    """ The diference between DQN and Double DQN is in the way target Q-values are computed during training.
+        In Double DQN, the action selection and action evaluation are decoupled to reduce overestimation bias.
+        First policy selects the best action for the next state, then target network evaluates that action to get the Q-value"""
+    use_double_dqn: bool = True
+    
 
 class DQNAgent:
     def __init__(self, state_dim: int, action_dim: int, config: DQNConfig):
+        
         self.config = config
         self.device = _device_or_default(config.device)
         self.policy_net = QNetwork(state_dim, action_dim, config.hidden_sizes).to(self.device)
         self.target_net = QNetwork(state_dim, action_dim, config.hidden_sizes).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+        # optimizer adam ( adaptive moment estimation )
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=config.lr)
         self.total_steps = 0
         self.action_dim = action_dim
@@ -81,16 +96,22 @@ class DQNAgent:
         """Epsilon-greedy action selection."""
         if np.random.rand() < epsilon:
             return np.random.randint(self.action_dim)
+        
+        # Convert state to tensor and add batch dimension (from shape (state_dim,) to (1, state_dim))
         state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        
+        # Get Q-values from policy network (torch.no_grad() no gradient needed )
         with torch.no_grad():
             q_values = self.policy_net(state_t)
         return int(torch.argmax(q_values, dim=1).item())
 
     def update(self, buffer: ReplayBuffer) -> Optional[float]:
+        """Sample a batch from the replay buffer and perform a DQN update step."""
         if len(buffer) < self.config.min_buffer_size:
             return None
 
         states, actions, rewards, next_states, dones = buffer.sample(self.config.batch_size)
+        # Move/copy to device ( where the model is located )
         states = states.to(self.device)
         actions = actions.to(self.device)
         rewards = rewards.to(self.device)
@@ -99,6 +120,8 @@ class DQNAgent:
 
         # Compute targets
         with torch.no_grad():
+
+            # Double DQN target calculation
             if self.config.use_double_dqn:
                 next_actions = torch.argmax(self.policy_net(next_states), dim=1, keepdim=True)
                 next_q = self.target_net(next_states).gather(1, next_actions).squeeze(1)
@@ -107,21 +130,29 @@ class DQNAgent:
             targets = rewards + self.config.gamma * (1 - dones) * next_q
 
         q_values = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        # Loss function is Mean Squared Error between current Q-values and targets
         loss = F.mse_loss(q_values, targets)
 
+        # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
+
+        # Gradient clipping 
         if self.config.gradient_clip_norm is not None:
             nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.config.gradient_clip_norm)
         self.optimizer.step()
 
+        # Update target network periodically 
         self.total_steps += 1
         if self.total_steps % self.config.target_update_interval == 0:
             self._update_target_network()
 
         return float(loss.item())
 
+
     def _update_target_network(self) -> None:
+        """Update target network parameters (depending on tau)"""
         tau = self.config.target_tau
         if tau >= 1.0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -142,7 +173,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
     Returns the trained agent and a history dict.
     """
     state_dim = int(np.prod(env.reset().shape))
-    action_dim = 2  # fixed for now: 0 or 1 (no insulin / insulin)
+    action_dim = 2  # fixed for now 0 or 1 (no insulin / insulin); could generalize to more realistic action scope
     agent = DQNAgent(state_dim, action_dim, config)
     buffer = ReplayBuffer(config.buffer_size)
     print(f"Training on device: {agent.device}")
@@ -151,12 +182,15 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
     history: Dict[str, List[float]] = {"episode_rewards": [], "losses": [], "tir": [], "tbr": [], "tor": []}
 
     global_step = 0
+
     for episode in range(1, config.max_episodes + 1):
+
         state = env.reset()
         episode_reward = 0.0
         glucose_trace: List[float] = []
 
         for _ in range(max_steps):
+
             epsilon = linear_epsilon(global_step, config)
             action = agent.act(state, epsilon)
             next_state, reward, done, info = env.step(action)
@@ -173,6 +207,8 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
             glucose_trace.append(float(info.get("glucose", 0.0)))
             if done:
                 break
+        
+        # End of episode, log metrics
 
         history["episode_rewards"].append(episode_reward)
         metrics = compute_range_metrics(glucose_trace, target_low=config.target_low, target_high=config.target_high)
@@ -180,6 +216,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
         history["tbr"].append(metrics["tbr"])
         history["tor"].append(metrics["tor"])
 
+        # For logging after every log_interval episodes giving average metrics (now is every 10 episodes)
         if episode % config.log_interval == 0:
             avg_reward = np.mean(history["episode_rewards"][-config.log_interval :])
             avg_tir = np.mean(history["tir"][-config.log_interval :])
@@ -252,4 +289,22 @@ def evaluate_policy(
     }
 
 
-__all__ = ["DQNConfig", "DQNAgent", "QNetwork", "train_dqn", "evaluate_policy"]
+def save_policy(agent: DQNAgent, path: str) -> None:
+    torch.save(agent.policy_net.state_dict(), path)
+
+
+def load_policy(agent: DQNAgent, path: str) -> None:
+    state = torch.load(path, map_location=agent.device)
+    agent.policy_net.load_state_dict(state)
+    agent.target_net.load_state_dict(agent.policy_net.state_dict())
+
+
+__all__ = [
+    "DQNConfig",
+    "DQNAgent",
+    "QNetwork",
+    "train_dqn",
+    "evaluate_policy",
+    "save_policy",
+    "load_policy",
+]

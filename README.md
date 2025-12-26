@@ -29,6 +29,7 @@ using a synthetic environment.
    - Add `--fast` for a quick smoke test (fewer episodes, smaller buffer).
    - Use `--episodes`/`--eval-episodes` to scale duration and evaluation runs.
    - Use `--plot-path` to save glucose plots after evaluation (requires matplotlib).
+   - Use `--save-checkpoint policy.pt` to persist the trained policy.
    - Use `--device cpu|mps|cuda|auto` to pick compute device (default: auto).
 3) Tune hyperparameters in `train.py` or via the dataclasses in
    `src/env/insulin_env.py` (`EnvParams`) and `src/agents/dqn_agent.py`
@@ -41,6 +42,23 @@ using a synthetic environment.
 - Training logs rolling TIR/TBR/TOR; after training, an evaluation run with
   epsilon=0 prints mean TIR/TBR/TOR and reward across eval episodes, and can
   optionally save glucose traces to a plot.
+
+## Real-world data (offline eval)
+
+- Expected CSV columns (rename in `RealDatasetConfig` if needed):
+  - `timestamp` (ISO or with a format string)
+  - `glucose_mg_dl` (required)
+  - `carbs_g` (optional)
+  - `insulin_units` (optional)
+- Run offline evaluation on real logs:
+  ```bash
+  python evaluate_real.py --csv path/to/data.csv --plot-path plots/real_eval.png
+  ```
+- To compare your trained policy in simulation (counterfactual rollout), save a checkpoint
+  during training (`--save-checkpoint policy.pt`), then:
+  ```bash
+  python evaluate_real.py --csv path/to/data.csv --checkpoint policy.pt --rollout-episodes 5 --sim-plot-path plots/real_sim_eval.png
+  ```
 
 ## Code layout
 
