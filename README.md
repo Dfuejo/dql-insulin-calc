@@ -8,12 +8,12 @@ using a synthetic environment.
 - **State:** `(G, dG, CH)` where `G` is current glucose (mg/dL), `dG` is change
   since the previous step, and `CH` is active carbohydrates (grams) being
   absorbed.
-- **Actions:** `[0, 1]` → `0` does nothing, `1` delivers a fixed rapid-acting
-  insulin bolus.
-- **Network:** a small MLP that outputs Q-values for each action.
-- **Environment:** stochastic meal generation, simple glucose/carbohydrate and
-  insulin-on-board dynamics; fast enough for a laptop but configurable for
-  more realistic simulations.
+- **Actions:** Toy env: `[0, 1]` (no bolus / bolus). Hovorka env: multiple bolus
+  levels (e.g., 0, 0.5U, 1U, 2U) to better control highs while limiting hypos.
+- **Environments:** `InsulinEnv` (fast toy dynamics) and `HovorkaEnv` (delayed
+  absorption/insulin action with multi-action space). Select via `--env toy|hovorka`.
+- **Network:** MLP that outputs Q-values for each action; exponential epsilon
+  schedule by default.
 
 ## Quick start
 
@@ -31,6 +31,7 @@ using a synthetic environment.
    - Use `--plot-path` to save glucose plots after evaluation (requires matplotlib).
    - Use `--save-checkpoint policy.pt` to persist the trained policy.
    - Use `--device cpu|mps|cuda|auto` to pick compute device (default: auto).
+   - Use `--env hovorka` to train on the Hovorka model (multi-level actions).
 3) Tune hyperparameters in `train.py` or via the dataclasses in
    `src/env/insulin_env.py` (`EnvParams`) and `src/agents/dqn_agent.py`
    (`DQNConfig`) to scale up/down for performance and fidelity.
@@ -41,7 +42,8 @@ using a synthetic environment.
   using thresholds from `DQNConfig.target_low`/`target_high` (defaults 70/180).
 - Training logs rolling TIR/TBR/TOR; after training, an evaluation run with
   epsilon=0 prints mean TIR/TBR/TOR and reward across eval episodes, and can
-  optionally save glucose traces to a plot.
+  optionally save glucose traces to a plot. Plots can aggregate traces into a
+  single mean line with variance shading.
 
 ## Real-world data (offline eval)
 
@@ -66,7 +68,8 @@ using a synthetic environment.
 
 ## Code layout
 
-- `src/env/insulin_env.py` — lightweight insulin/glucose environment.
+- `src/env/insulin_env.py` — lightweight insulin/glucose environment (toy).
+- `src/env/hovorka_env.py` — Hovorka-based environment with multi-level insulin actions.
 - `src/agents/dqn_agent.py` — DQN agent, Q-network, and training loop.
 - `src/agents/replay_buffer.py` — experience buffer for off-policy learning.
 - `train.py` — runnable training harness with tweakable defaults.
