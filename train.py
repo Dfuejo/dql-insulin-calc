@@ -40,6 +40,13 @@ def parse_args() -> argparse.Namespace:
         help="Compute device preference. 'auto' tries mps->cuda->cpu.",
     )
     parser.add_argument(
+        "--env",
+        type=str,
+        default="toy",
+        choices=["toy", "hovorka"],
+        help="Choose environment: 'toy' (InsulinEnv) or 'hovorka' (HovorkaEnv).",
+    )
+    parser.add_argument(
         "--save-checkpoint",
         type=str,
         default=None,
@@ -51,8 +58,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     # Environment configuration
-    env_params = EnvParams()
-    env = InsulinEnv(env_params, seed=args.seed)
+    if args.env == "hovorka":
+        from env import HovorkaEnv, HovorkaParams
+
+        env_params = HovorkaParams()
+        env = HovorkaEnv(env_params, seed=args.seed)
+    else:
+        env_params = EnvParams()
+        env = InsulinEnv(env_params, seed=args.seed)
 
     # DQN configuration (tweak for speed vs performance)
     config = DQNConfig(

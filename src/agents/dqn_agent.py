@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+import math
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 from .metrics import compute_range_metrics
 from .replay_buffer import ReplayBuffer, Transition
@@ -53,7 +53,7 @@ class DQNConfig:
     lr: float = 1e-3
     epsilon_start: float = 1.0
     epsilon_end: float = 0.01
-    epsilon_eta: float = 30_000.0  # exponential decay scale
+    epsilon_eta: float = 3_000.0  # exponential decay scale in steps
 
     # Replay buffer parameters
     batch_size: int = 64
@@ -180,7 +180,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
     Returns the trained agent and a history dict.
     """
     state_dim = int(np.prod(env.reset().shape))
-    action_dim = 2  # fixed for now 0 or 1 (no insulin / insulin); could generalize to more realistic action scope
+    action_dim = getattr(env, "action_dim", None) or 2  # fallback to 2 if not provided
     agent = DQNAgent(state_dim, action_dim, config)
     buffer = ReplayBuffer(config.buffer_size)
     print(f"Training on device: {agent.device}")
@@ -236,7 +236,11 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
             avg_tir = np.mean(history["tir"][-config.log_interval :])
             avg_tbr = np.mean(history["tbr"][-config.log_interval :])
             avg_tor = np.mean(history["tor"][-config.log_interval :])
-            var_reward = np.var(history["episode_rewards"][-config.log_interval :]) if len(history["episode_rewards"]) >= config.log_interval else 0.0
+            var_reward = (
+                np.var(history["episode_rewards"][-config.log_interval :])
+                if len(history["episode_rewards"]) >= config.log_interval
+                else 0.0
+            )
             var_tir = np.var(history["tir"][-config.log_interval :]) if len(history["tir"]) >= config.log_interval else 0.0
             history["interval_stats"].append(
                 {
