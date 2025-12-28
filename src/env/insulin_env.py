@@ -35,8 +35,8 @@ class EnvParams:
     meal_probability: float = 0.05  # probability of a meal each step
     meal_size_range: Tuple[float, float] = (10.0, 80.0)  # grams
 
-    insulin_units_per_action: float = 1.0  # bolus size for action=1
-    insulin_sensitivity: float = 5.0  # mg/dL drop per unit insulin per step
+    insulin_units_per_action: float = 0.5  # bolus size for action=1 (smaller to reduce hypos)
+    insulin_sensitivity: float = 4.0  # mg/dL drop per unit insulin per step
     insulin_decay: float = 0.05  # fraction of insulin cleared each step
 
     carb_absorption: float = 0.05  # fraction of active carbs absorbed per step
@@ -139,12 +139,19 @@ class InsulinEnv:
         deviation = abs(glucose - p.target_glucose)
         reward = -deviation / 50.0  # scaled deviation penalty
 
+        # Strong hypo penalty; mild hyper penalty
         if glucose < 70:
-            reward -= 2.0  # strong penalty for hypo
+            reward -= 5.0
+        elif glucose < 80:
+            reward -= 2.5
         elif glucose > 180:
-            reward -= 1.0  # penalty for sustained highs
+            reward -= 0.3
 
-        reward -= 0.1 * action  # discourage unnecessary boluses
+        # discourage bolus when already below target
+        if glucose < p.target_glucose and action == 1:
+            reward -= 1.0
+
+        reward -= 0.02 * action  # slight action cost
         return reward
 
     def _build_state(self, glucose: float, delta_glucose: float, carbs: float) -> np.ndarray:

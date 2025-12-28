@@ -58,9 +58,8 @@ def main() -> None:
     config = DQNConfig(
         max_episodes=args.episodes,
         batch_size=64,
-        hidden_sizes=(128, 128),
+        hidden_sizes=(256, 256),
         buffer_size=75_000,
-        epsilon_decay=20_000,
     )
 
     if args.fast:
@@ -114,7 +113,7 @@ def main() -> None:
     # Plot glucose traces if matplotlib is available
     try:
         output_path = plot_glucose_traces(
-            eval_results["glucose_traces"], config.target_low, config.target_high, args.plot_path
+            eval_results["glucose_traces"], config.target_low, config.target_high, args.plot_path, aggregate=True
         )
         print(f"Saved evaluation glucose plot to {output_path}")
     except ImportError:

@@ -127,6 +127,7 @@ def main() -> None:
             target_high=180.0,
             output_path=args.plot_path,
             max_traces=8,
+            aggregate=True,
         )
         print(f"Saved real glucose plot to {args.plot_path}")
     except ImportError:
@@ -208,6 +209,7 @@ def main() -> None:
                     target_high=180.0,
                     output_path=args.sim_plot_path,
                     max_traces=8,
+                    aggregate=True,
                 )
                 print(f"Saved simulated glucose plot to {args.sim_plot_path}")
             except ImportError:

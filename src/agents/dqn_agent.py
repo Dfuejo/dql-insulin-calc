@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 from .metrics import compute_range_metrics
 from .replay_buffer import ReplayBuffer, Transition
@@ -51,8 +52,8 @@ class DQNConfig:
     gamma: float = 0.99
     lr: float = 1e-3
     epsilon_start: float = 1.0
-    epsilon_end: float = 0.05
-    epsilon_decay: int = 10_000
+    epsilon_end: float = 0.01
+    epsilon_eta: float = 30_000.0  # exponential decay scale
 
     # Replay buffer parameters
     batch_size: int = 64
@@ -62,7 +63,7 @@ class DQNConfig:
     # Target network update parameters
     target_update_interval: int = 500
     target_tau: float = 1.0  # 1.0 => hard update, <1 => soft update
-    hidden_sizes: Tuple[int, ...] = (128, 128)
+    hidden_sizes: Tuple[int, ...] = (256, 256)
     max_episodes: int = 500
     max_steps_per_episode: Optional[int] = None
     log_interval: int = 10 # log every n episodes
@@ -162,9 +163,15 @@ class DQNAgent:
                 target_param.data.mul_(1 - tau).add_(tau * param.data)
 
 
-def linear_epsilon(step: int, config: DQNConfig) -> float:
-    fraction = min(1.0, step / max(1, config.epsilon_decay))
-    return config.epsilon_start + fraction * (config.epsilon_end - config.epsilon_start)
+def exp_epsilon(step: int, config: DQNConfig) -> float:
+    """
+    Exponential epsilon schedule:
+        eps(t) = eps_f + (eps_0 - eps_f) * exp(-t / eta)
+    """
+    return float(
+        config.epsilon_end
+        + (config.epsilon_start - config.epsilon_end) * math.exp(-step / max(1.0, config.epsilon_eta))
+    )
 
 
 def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]:
@@ -179,7 +186,14 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
     print(f"Training on device: {agent.device}")
 
     max_steps = config.max_steps_per_episode or env.params.max_steps
-    history: Dict[str, List[float]] = {"episode_rewards": [], "losses": [], "tir": [], "tbr": [], "tor": []}
+    history: Dict[str, List[float]] = {
+        "episode_rewards": [],
+        "losses": [],
+        "tir": [],
+        "tbr": [],
+        "tor": [],
+        "interval_stats": [],
+    }
 
     global_step = 0
 
@@ -191,7 +205,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
 
         for _ in range(max_steps):
 
-            epsilon = linear_epsilon(global_step, config)
+            epsilon = exp_epsilon(global_step, config)
             action = agent.act(state, epsilon)
             next_state, reward, done, info = env.step(action)
             transition = Transition(state, action, reward, next_state, done)
@@ -222,11 +236,25 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
             avg_tir = np.mean(history["tir"][-config.log_interval :])
             avg_tbr = np.mean(history["tbr"][-config.log_interval :])
             avg_tor = np.mean(history["tor"][-config.log_interval :])
+            var_reward = np.var(history["episode_rewards"][-config.log_interval :]) if len(history["episode_rewards"]) >= config.log_interval else 0.0
+            var_tir = np.var(history["tir"][-config.log_interval :]) if len(history["tir"]) >= config.log_interval else 0.0
+            history["interval_stats"].append(
+                {
+                    "episode": episode,
+                    "mean_reward": float(avg_reward),
+                    "var_reward": float(var_reward),
+                    "mean_tir": float(avg_tir),
+                    "var_tir": float(var_tir),
+                    "mean_tbr": float(avg_tbr),
+                    "mean_tor": float(avg_tor),
+                    "epsilon": float(exp_epsilon(global_step, config)),
+                }
+            )
             print(
                 f"Episode {episode}/{config.max_episodes} | "
                 f"avg reward: {avg_reward:.3f} | "
                 f"TIR/TBR/TOR: {avg_tir:.2f}/{avg_tbr:.2f}/{avg_tor:.2f} | "
-                f"epsilon: {linear_epsilon(global_step, config):.3f} | "
+                f"epsilon: {exp_epsilon(global_step, config):.3f} | "
                 f"buffer: {len(buffer)}"
             )
 
