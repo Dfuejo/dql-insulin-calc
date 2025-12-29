@@ -1,19 +1,24 @@
 # RL Insulin Calculator
 
 Reinforcement Learning project for insulin decision-making in Type 1 Diabetes
-using a synthetic environment.
+using synthetic environments (toy and Hovorka).
 
 ## Problem setup
 
 - **State:** `(G, dG, CH)` where `G` is current glucose (mg/dL), `dG` is change
-  since the previous step, and `CH` is active carbohydrates (grams) being
-  absorbed.
-- **Actions:** Toy env: `[0, 1]` (no bolus / bolus). Hovorka env: multiple bolus
-  levels (e.g., 0, 0.5U, 1U, 2U) to better control highs while limiting hypos.
-- **Environments:** `InsulinEnv` (fast toy dynamics) and `HovorkaEnv` (delayed
-  absorption/insulin action with multi-action space). Select via `--env toy|hovorka`.
-- **Network:** MLP that outputs Q-values for each action; exponential epsilon
-  schedule by default.
+  since the previous step, and `CH` is active carbohydrates (grams). Optionally
+  stack recent observations via `state_history` (default 1; see `DQNConfig`).
+- **Actions:** Toy env: `[0, 1]` (no bolus / bolus). Hovorka env: 4 bolus levels
+  (0, 0.5U, 1U, 2U) to limit catastrophic hypos while allowing corrections.
+- **Environments:**
+  - `InsulinEnv` — fast toy dynamics.
+  - `HovorkaEnv` — discrete-time Hovorka model (5‑min steps) with multi-action
+    dosing, pre-sampled meals (4 per day with timing and carb noise), and an
+    asymmetric reward (fort hypo, suau hyper, bonificació en rang, penalitzacions
+    de tendència només quan el canvi és desfavorable). Select via `--env toy|hovorka`.
+- **Network/agent:** Double DQN with dueling heads, n-step returns, optional
+  prioritized replay (PER), warm-up heurístic inicial per omplir el buffer, i
+  decay exponencial d’epsilon (eps_0=1.0, eps_f=0.05, eta=50k passos).
 
 ## Quick start
 
@@ -31,7 +36,8 @@ using a synthetic environment.
    - Use `--plot-path` to save glucose plots after evaluation (requires matplotlib).
    - Use `--save-checkpoint policy.pt` to persist the trained policy.
    - Use `--device cpu|mps|cuda|auto` to pick compute device (default: auto).
-   - Use `--env hovorka` to train on the Hovorka model (multi-level actions).
+   - Use `--env hovorka` to train on the Hovorka model; `--hovorka-patient`
+     can be `adult|adolescent|child|random` to sample presets.
 3) Tune hyperparameters in `train.py` or via the dataclasses in
    `src/env/insulin_env.py` (`EnvParams`) and `src/agents/dqn_agent.py`
    (`DQNConfig`) to scale up/down for performance and fidelity.
@@ -40,10 +46,12 @@ using a synthetic environment.
 
 - Reports Time In Range (TIR), Time Below Range (TBR), and Time Over Range (TOR)
   using thresholds from `DQNConfig.target_low`/`target_high` (defaults 70/180).
-- Training logs rolling TIR/TBR/TOR; after training, an evaluation run with
-  epsilon=0 prints mean TIR/TBR/TOR and reward across eval episodes, and can
-  optionally save glucose traces to a plot. Plots can aggregate traces into a
-  single mean line with variance shading.
+- Training logs rolling TIR/TBR/TOR and reward variance per bloc.
+- After training, an evaluation run with epsilon=0 prints mean TIR/TBR/TOR and
+  reward across eval episodes, and can save glucose traces. Plots can aggregate
+  traces into a mean line with ±1 std shading.
+- `baseline_eval.py` compares the trained policy against a simple heuristic
+  baseline and can overlay plots.
 
 ## Real-world data (offline eval)
 
