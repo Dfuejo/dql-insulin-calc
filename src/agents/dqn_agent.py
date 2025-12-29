@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 import math
 
 import numpy as np
@@ -10,7 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .metrics import compute_range_metrics
-from .replay_buffer import ReplayBuffer, Transition
+from collections import deque
+
+from .replay_buffer import PrioritizedReplayBuffer, ReplayBuffer, Transition
 
 
 def _device_or_default(device: Optional[str] = None) -> torch.device:
@@ -30,7 +32,7 @@ def _device_or_default(device: Optional[str] = None) -> torch.device:
 class QNetwork(nn.Module):
     """Feed-forward network producing Q-values for each action."""
 
-    def __init__(self, input_dim: int, output_dim: int, hidden_sizes: Tuple[int, ...]):
+    def __init__(self, input_dim: int, output_dim: int, hidden_sizes: Tuple[int, ...], dueling: bool = False):
         super().__init__()
         layers: List[nn.Module] = []
         prev = input_dim
@@ -38,11 +40,22 @@ class QNetwork(nn.Module):
             layers.append(nn.Linear(prev, size))
             layers.append(nn.ReLU())
             prev = size
-        layers.append(nn.Linear(prev, output_dim))
-        self.model = nn.Sequential(*layers)
+        if dueling:
+            self.feature = nn.Sequential(*layers)
+            self.value_stream = nn.Sequential(nn.Linear(prev, prev), nn.ReLU(), nn.Linear(prev, 1))
+            self.adv_stream = nn.Sequential(nn.Linear(prev, prev), nn.ReLU(), nn.Linear(prev, output_dim))
+        else:
+            layers.append(nn.Linear(prev, output_dim))
+            self.model = nn.Sequential(*layers)
+        self.dueling = dueling
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
+        if not self.dueling:
+            return self.model(x)
+        feat = self.feature(x)
+        value = self.value_stream(feat)
+        adv = self.adv_stream(feat)
+        return value + adv - adv.mean(dim=1, keepdim=True)
 
 
 @dataclass
@@ -52,8 +65,9 @@ class DQNConfig:
     gamma: float = 0.99
     lr: float = 1e-3
     epsilon_start: float = 1.0
-    epsilon_end: float = 0.01
-    epsilon_eta: float = 3_000.0  # exponential decay scale in steps
+    # Exploration schedule: start high, decay to low exploration over ~50k steps
+    epsilon_end: float = 0.05
+    epsilon_eta: float = 50_000.0
 
     # Replay buffer parameters
     batch_size: int = 64
@@ -63,7 +77,7 @@ class DQNConfig:
     # Target network update parameters
     target_update_interval: int = 500
     target_tau: float = 1.0  # 1.0 => hard update, <1 => soft update
-    hidden_sizes: Tuple[int, ...] = (256, 256)
+    hidden_sizes: Tuple[int, ...] = (64, 64, 64, 64)
     max_episodes: int = 500
     max_steps_per_episode: Optional[int] = None
     log_interval: int = 10 # log every n episodes
@@ -77,6 +91,13 @@ class DQNConfig:
         In Double DQN, the action selection and action evaluation are decoupled to reduce overestimation bias.
         First policy selects the best action for the next state, then target network evaluates that action to get the Q-value"""
     use_double_dqn: bool = True
+    use_dueling: bool = True
+    prioritized_replay: bool = True
+    per_alpha: float = 0.6
+    per_beta: float = 0.4
+    n_step: int = 3
+    warmup_episodes: int = 50
+    state_history: int = 1
     
 
 class DQNAgent:
@@ -84,8 +105,8 @@ class DQNAgent:
         
         self.config = config
         self.device = _device_or_default(config.device)
-        self.policy_net = QNetwork(state_dim, action_dim, config.hidden_sizes).to(self.device)
-        self.target_net = QNetwork(state_dim, action_dim, config.hidden_sizes).to(self.device)
+        self.policy_net = QNetwork(state_dim, action_dim, config.hidden_sizes, dueling=config.use_dueling).to(self.device)
+        self.target_net = QNetwork(state_dim, action_dim, config.hidden_sizes, dueling=config.use_dueling).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         
         # optimizer adam ( adaptive moment estimation )
@@ -111,13 +132,16 @@ class DQNAgent:
         if len(buffer) < self.config.min_buffer_size:
             return None
 
-        states, actions, rewards, next_states, dones = buffer.sample(self.config.batch_size)
+        (states, actions, rewards, next_states, dones, n_steps), weights, indices = buffer.sample(self.config.batch_size)
         # Move/copy to device ( where the model is located )
         states = states.to(self.device)
         actions = actions.to(self.device)
         rewards = rewards.to(self.device)
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
+        n_steps_t = n_steps.to(self.device)
+        if weights is not None:
+            weights = weights.to(self.device)
 
         # Compute targets
         with torch.no_grad():
@@ -128,12 +152,17 @@ class DQNAgent:
                 next_q = self.target_net(next_states).gather(1, next_actions).squeeze(1)
             else:
                 next_q = self.target_net(next_states).max(1).values
-            targets = rewards + self.config.gamma * (1 - dones) * next_q
+            gamma_pow = torch.pow(torch.tensor(self.config.gamma, device=self.device), n_steps_t)
+            targets = rewards + gamma_pow * (1 - dones) * next_q
 
         q_values = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # Loss function is Mean Squared Error between current Q-values and targets
-        loss = F.mse_loss(q_values, targets)
+        td_errors = q_values - targets
+        if weights is not None:
+            loss = (weights * td_errors.pow(2)).mean()
+        else:
+            loss = F.mse_loss(q_values, targets)
 
         # Optimize the model
         self.optimizer.zero_grad()
@@ -143,6 +172,10 @@ class DQNAgent:
         if self.config.gradient_clip_norm is not None:
             nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.config.gradient_clip_norm)
         self.optimizer.step()
+
+        # Update PER priorities
+        if indices is not None and hasattr(buffer, "update_priorities"):
+            buffer.update_priorities(indices, td_errors.detach())
 
         # Update target network periodically 
         self.total_steps += 1
@@ -179,10 +212,15 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
     Train a DQN agent in the provided environment.
     Returns the trained agent and a history dict.
     """
-    state_dim = int(np.prod(env.reset().shape))
+    raw_state = env.reset()
+    state_dim_single = int(np.prod(raw_state.shape))
+    state_dim = state_dim_single * max(1, config.state_history)
     action_dim = getattr(env, "action_dim", None) or 2  # fallback to 2 if not provided
     agent = DQNAgent(state_dim, action_dim, config)
-    buffer = ReplayBuffer(config.buffer_size)
+    if config.prioritized_replay:
+        buffer: ReplayBuffer = PrioritizedReplayBuffer(config.buffer_size, alpha=config.per_alpha, beta=config.per_beta)
+    else:
+        buffer = ReplayBuffer(config.buffer_size)
     print(f"Training on device: {agent.device}")
 
     max_steps = config.max_steps_per_episode or env.params.max_steps
@@ -196,20 +234,72 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
     }
 
     global_step = 0
+    hist_len = max(1, config.state_history)
+
+    def flatten_history(history: Deque[np.ndarray]) -> np.ndarray:
+        return np.concatenate(list(history), axis=-1)
+
+    def rule_action(state: np.ndarray) -> int:
+        glucose = state[0] * env.params.glucose_scale
+        if glucose < 140:
+            return 0
+        if glucose > 300:
+            return action_dim - 1
+        if glucose > 220:
+            return max(0, action_dim - 2)
+        if glucose > 180:
+            return max(0, action_dim - 3)
+        return 1 if action_dim > 1 else 0
+
+    def maybe_push_n_step(n_step_buf: Deque[Transition]) -> Optional[Transition]:
+        if len(n_step_buf) < config.n_step:
+            return None
+        R = 0.0
+        done_any = False
+        for i, tr in enumerate(n_step_buf):
+            R += (config.gamma ** i) * tr.reward
+            if tr.done:
+                done_any = True
+                last = tr
+                break
+        else:
+            last = n_step_buf[-1]
+        n_used = min(config.n_step, len(n_step_buf))
+        aggregated = Transition(
+            state=n_step_buf[0].state,
+            action=n_step_buf[0].action,
+            reward=R,
+            next_state=last.next_state,
+            done=last.done or done_any,
+            n_step=n_used,
+        )
+        n_step_buf.popleft()
+        return aggregated
 
     for episode in range(1, config.max_episodes + 1):
 
-        state = env.reset()
+        obs = env.reset()
+        history_deque: Deque[np.ndarray] = deque([obs] * hist_len, maxlen=hist_len)
+        state = flatten_history(history_deque)
         episode_reward = 0.0
         glucose_trace: List[float] = []
+        n_step_buf: Deque[Transition] = deque()
 
         for _ in range(max_steps):
 
             epsilon = exp_epsilon(global_step, config)
-            action = agent.act(state, epsilon)
-            next_state, reward, done, info = env.step(action)
+            if episode <= config.warmup_episodes:
+                action = rule_action(state)
+            else:
+                action = agent.act(state, epsilon)
+            next_obs, reward, done, info = env.step(action)
+            history_deque.append(next_obs)
+            next_state = flatten_history(history_deque)
             transition = Transition(state, action, reward, next_state, done)
-            buffer.push(transition)
+            n_step_buf.append(transition)
+            maybe = maybe_push_n_step(n_step_buf)
+            if maybe:
+                buffer.push(maybe)
 
             loss = agent.update(buffer)
             if loss is not None:
@@ -221,6 +311,14 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
             glucose_trace.append(float(info.get("glucose", 0.0)))
             if done:
                 break
+
+        # flush remaining n-step transitions
+        while n_step_buf:
+            maybe = maybe_push_n_step(n_step_buf)
+            if maybe:
+                buffer.push(maybe)
+            else:
+                n_step_buf.popleft()
         
         # End of episode, log metrics
 
@@ -280,22 +378,26 @@ def evaluate_policy(
     agent.policy_net.eval()
 
     max_steps = max_steps or env.params.max_steps
+    hist_len = max(1, agent.config.state_history)
     episode_metrics: List[Dict[str, float]] = []
     episode_rewards: List[float] = []
     episode_traces: List[List[float]] = []
 
     with torch.no_grad():
         for _ in range(episodes):
-            state = env.reset()
+            obs = env.reset()
+            history_deque: Deque[np.ndarray] = deque([obs] * hist_len, maxlen=hist_len)
+            state = np.concatenate(list(history_deque), axis=-1)
             glucose_trace: List[float] = []
             total_reward = 0.0
 
             for _ in range(max_steps):
                 action = agent.act(state, epsilon=0.0)
-                next_state, reward, done, info = env.step(action)
+                next_obs, reward, done, info = env.step(action)
                 glucose_trace.append(float(info.get("glucose", 0.0)))
                 total_reward += reward
-                state = next_state
+                history_deque.append(next_obs)
+                state = np.concatenate(list(history_deque), axis=-1)
                 if done:
                     break
 

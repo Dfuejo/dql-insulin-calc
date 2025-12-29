@@ -12,7 +12,7 @@ Action: 0 (no bolus) or 1 (deliver fixed bolus).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -43,13 +43,13 @@ class HovorkaParams:
 
     # Simulation settings
     dt: float = 5.0  # minutes per step
-    max_steps: int = 288  # 24h at 5-min steps
+    max_steps: int = 288  # 24h at 5-min steps (can extend for longer horizons)
     target_glucose: float = 110.0  # mg/dL
     min_glucose: float = 40.0
     max_glucose: float = 400.0
     noise_std: float = 2.0  # mg/dL measurement noise
 
-    # Bolus dosing
+    # Bolus dosing (kept small to avoid catastrophic hypos when exploring)
     insulin_action_levels: Tuple[float, ...] = (0.0, 0.5, 1.0, 2.0)  # U bolus options
 
     # Normalization for state output
@@ -59,13 +59,46 @@ class HovorkaParams:
 
 
 class HovorkaEnv:
-    def __init__(self, params: HovorkaParams | None = None, seed: int | None = None):
+    def __init__(
+        self,
+        params: HovorkaParams | None = None,
+        seed: int | None = None,
+        population_params: Optional[List[HovorkaParams]] = None,
+    ):
         self.params = params or HovorkaParams()
+        self.population_params = population_params
         self.rng = np.random.default_rng(seed)
         self.action_dim = len(self.params.insulin_action_levels)
         self.reset()
 
+    def _prepare_meal_schedule(self) -> None:
+        """Pre-sample one day's worth of meals (with jitter) to avoid per-step resampling."""
+        p = self.params
+        base_meals = [
+            (8 * 60, 40.0),   # Breakfast
+            (12 * 60, 80.0),  # Lunch
+            (18 * 60, 60.0),  # Dinner
+            (22 * 60, 30.0),  # Supper
+        ]
+        jitter = 30  # minutes early/late
+        carb_noise = 20.0  # g
+        steps_per_day = int(24 * 60 / p.dt)
+        days = max(1, int(np.ceil(p.max_steps / steps_per_day)))
+        self.meal_schedule = []
+        for day in range(days):
+            offset = day * steps_per_day
+            for t_min, base in base_meals:
+                t = (t_min + float(self.rng.uniform(-jitter, jitter))) % (24 * 60)
+                carbs = max(0.0, base + float(self.rng.uniform(-carb_noise, carb_noise)))
+                step_idx = int(t // p.dt) + offset
+                self.meal_schedule.append({"step": step_idx, "carbs": carbs, "delivered": False})
+        self.meal_schedule.sort(key=lambda m: m["step"])
+        self.next_meal_idx = 0
+
     def reset(self, glucose: float | None = None) -> np.ndarray:
+        if self.population_params:
+            self.params = self.rng.choice(self.population_params)
+            self.action_dim = len(self.params.insulin_action_levels)
         p = self.params
         if glucose is None:
             glucose = float(self.rng.uniform(90.0, 140.0))
@@ -80,6 +113,7 @@ class HovorkaEnv:
         self.prev_glucose = glucose
         self.active_carbs = 0.0
         self.steps = 0
+        self._prepare_meal_schedule()
         self.state = self._build_state(glucose, 0.0, self.active_carbs)
         return self.state.copy()
 
@@ -87,15 +121,25 @@ class HovorkaEnv:
         if action < 0 or action >= len(self.params.insulin_action_levels):
             raise ValueError(f"Action must be in [0, {len(self.params.insulin_action_levels)-1}]")
         p = self.params
+        current_step = self.steps
         self.steps += 1
 
-        # Meal: simple stochastic meal to mirror toy env
+        # Meal schedule (pre-sampled in reset)
         meal_carbs = 0.0
-        if self.rng.random() < 0.05:
-            meal_carbs = float(self.rng.uniform(10.0, 80.0))
+        while self.next_meal_idx < len(self.meal_schedule):
+            meal = self.meal_schedule[self.next_meal_idx]
+            if meal["delivered"] or meal["step"] > current_step:
+                break
+            meal_carbs = meal["carbs"]
+            meal["delivered"] = True
+            self.next_meal_idx += 1
+            break
         self.active_carbs += meal_carbs
 
-        # Bolus
+        # Safety gate: suppress bolus when already low
+        glucose_now = self.prev_glucose
+
+        # Bolus (no hard gating; let the policy learn, reward will discourage hypo)
         bolus_units = p.insulin_action_levels[action]
         self.S1 += bolus_units
 
@@ -139,11 +183,12 @@ class HovorkaEnv:
         # Active carbs decay (for state)
         self.active_carbs = max(0.0, self.active_carbs - Ra * dt)
 
-        glucose_mgdl = max(10.0, self.G * p.VG * p.BW * 18.0 + float(self.rng.normal(0, p.noise_std)))
+        glucose_raw = self.G * p.VG * p.BW * 18.0 + float(self.rng.normal(0, p.noise_std))
+        glucose_mgdl = float(np.clip(glucose_raw, 1.0, p.max_glucose))
         delta_glucose = glucose_mgdl - self.prev_glucose
         self.prev_glucose = glucose_mgdl
 
-        reward = self._compute_reward(glucose_mgdl, action)
+        reward = self._compute_reward(glucose_mgdl, action, delta_glucose)
         done = (
             glucose_mgdl <= p.min_glucose
             or glucose_mgdl >= p.max_glucose
@@ -154,31 +199,46 @@ class HovorkaEnv:
         info = {"glucose": glucose_mgdl, "meal": meal_carbs, "active_carbs": self.active_carbs}
         return self.state.copy(), reward, done, info
 
-    def _compute_reward(self, glucose: float, action: int) -> float:
+    def _compute_reward(self, glucose: float, action: int, delta_glucose: float) -> float:
+        """
+        Asymmetric reward: strongly punish hypo, mildly punish hyper,
+        reward in-range, and penalize trends in the wrong direction.
+        """
         p = self.params
         deviation = abs(glucose - p.target_glucose)
-        reward = -deviation / 50.0
+        reward = -deviation / 60.0  # base deviation cost
+
         # In-range bonus
         if 90 <= glucose <= 140:
+            reward += 2.0
+        elif 80 <= glucose <= 160:
             reward += 1.0
-        # Trend term: discourage rises when high, drops when low
-        # (delta glucose encoded in state; approximate with deviation change)
-        # Hypo penalties
+
+        # Trend penalties only when moving the wrong way
+        if glucose > 180 and delta_glucose > 0:
+            reward -= 1.0
+        if glucose < 90 and delta_glucose < 0:
+            reward -= 2.0
+
+        # Hypo penalties (strong)
         if glucose < 70:
-            reward -= 6.0
+            reward -= 10.0
         elif glucose < 80:
             reward -= 3.0
-        # Hyper penalties with ramp
+
+        # Hyper penalties (softer)
         if glucose > 180:
-            reward -= 2.0
+            reward -= 1.0
         if glucose > 250:
-            reward -= 3.0
+            reward -= 2.0
         if glucose > 300:
             reward -= 4.0
-        # Discourage bolus when already below target
-        if glucose < p.target_glucose and action > 0:
-            reward -= 1.0
-        reward -= 0.01 * action  # slight action cost
+
+        # Action cost: discourage insulin when already below target
+        if glucose < p.target_glucose:
+            reward -= 0.05 * action
+        else:
+            reward -= 0.005 * action
         return reward
 
     def _build_state(self, glucose: float, delta_glucose: float, carbs: float) -> np.ndarray:

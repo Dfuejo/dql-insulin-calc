@@ -47,6 +47,13 @@ def parse_args() -> argparse.Namespace:
         help="Choose environment: 'toy' (InsulinEnv) or 'hovorka' (HovorkaEnv).",
     )
     parser.add_argument(
+        "--hovorka-patient",
+        type=str,
+        default="adult",
+        choices=["adult", "adolescent", "child", "random"],
+        help="Patient preset for Hovorka env.",
+    )
+    parser.add_argument(
         "--save-checkpoint",
         type=str,
         default=None,
@@ -61,8 +68,20 @@ def main() -> None:
     if args.env == "hovorka":
         from env import HovorkaEnv, HovorkaParams
 
-        env_params = HovorkaParams()
-        env = HovorkaEnv(env_params, seed=args.seed)
+        def preset(name: str) -> HovorkaParams:
+            name = name.lower()
+            if name == "adolescent":
+                return HovorkaParams(BW=60.0)
+            if name == "child":
+                return HovorkaParams(BW=40.0)
+            return HovorkaParams()
+
+        if args.hovorka_patient == "random":
+            population = [preset("adult"), preset("adolescent"), preset("child")]
+            env = HovorkaEnv(population_params=population, seed=args.seed)
+        else:
+            env_params = preset(args.hovorka_patient)
+            env = HovorkaEnv(env_params, seed=args.seed)
     else:
         env_params = EnvParams()
         env = InsulinEnv(env_params, seed=args.seed)
@@ -71,7 +90,6 @@ def main() -> None:
     config = DQNConfig(
         max_episodes=args.episodes,
         batch_size=64,
-        hidden_sizes=(256, 256),
         buffer_size=75_000,
     )
 
@@ -81,6 +99,7 @@ def main() -> None:
             max_episodes=min(30, config.max_episodes),
             min_buffer_size=500,
             buffer_size=20_000,
+            warmup_episodes=5,
         )
 
     # Device selection
