@@ -8,14 +8,17 @@ using synthetic environments (toy and Hovorka).
 - **State:** `(G, dG, CH)` where `G` is current glucose (mg/dL), `dG` is change
   since the previous step, and `CH` is active carbohydrates (grams). Optionally
   stack recent observations via `state_history` (default 1; see `DQNConfig`).
-- **Actions:** Toy env: `[0, 1]` (no bolus / bolus). Hovorka env: 4 bolus levels
-  (0, 0.5U, 1U, 2U) to limit catastrophic hypos while allowing corrections.
+- **Actions:** Toy env: `[0, 1]` (no bolus / bolus). Hovorka env: micro-bolus
+  levels (0, 0.1U, 0.2U, 0.4U, 0.6U) with safety gating; a heuristic meal bolus
+  (carbs/10, reduced if glucose <140 mg/dL) is applied externally so the agent
+  focuses on small corrections.
 - **Environments:**
   - `InsulinEnv` — fast toy dynamics.
   - `HovorkaEnv` — discrete-time Hovorka model (5‑min steps) with multi-action
-    dosing, pre-sampled meals (4 per day with timing and carb noise), and an
-    asymmetric reward (fort hypo, suau hyper, bonificació en rang, penalitzacions
-    de tendència només quan el canvi és desfavorable). Select via `--env toy|hovorka`.
+    dosing, pre-sampled meals (4 per day with timing and carb noise), an external
+    meal bolus heuristic, and an asymmetric reward (strong hypo penalty, mild
+    hyper penalty, in-range bonus, trend penalties only when direction is wrong).
+    Select via `--env toy|hovorka`.
 - **Network/agent:** Double DQN with dueling heads, n-step returns, optional
   prioritized replay (PER), warm-up heurístic inicial per omplir el buffer, i
   decay exponencial d’epsilon (eps_0=1.0, eps_f=0.05, eta=50k passos).
@@ -46,7 +49,8 @@ using synthetic environments (toy and Hovorka).
 
 - Reports Time In Range (TIR), Time Below Range (TBR), and Time Over Range (TOR)
   using thresholds from `DQNConfig.target_low`/`target_high` (defaults 70/180).
-- Training logs rolling TIR/TBR/TOR and reward variance per bloc.
+- Training logs rolling TIR/TBR/TOR, reward variance per bloc, and mean episode
+  length.
 - After training, an evaluation run with epsilon=0 prints mean TIR/TBR/TOR and
   reward across eval episodes, and can save glucose traces. Plots can aggregate
   traces into a mean line with ±1 std shading.
