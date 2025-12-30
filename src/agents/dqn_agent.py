@@ -65,9 +65,9 @@ class DQNConfig:
     gamma: float = 0.99
     lr: float = 1e-3
     epsilon_start: float = 1.0
-    # Exploration schedule: start high, decay to low exploration over ~50k steps
+    # Exploration schedule: start high, decay to low exploration over ~10k steps
     epsilon_end: float = 0.05
-    epsilon_eta: float = 50_000.0
+    epsilon_eta: float = 10_000.0
 
     # Replay buffer parameters
     batch_size: int = 64
@@ -96,7 +96,7 @@ class DQNConfig:
     per_alpha: float = 0.6
     per_beta: float = 0.4
     n_step: int = 3
-    warmup_episodes: int = 50
+    warmup_episodes: int = 100
     state_history: int = 1
     
 

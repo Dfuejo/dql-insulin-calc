@@ -49,8 +49,8 @@ class HovorkaParams:
     max_glucose: float = 400.0
     noise_std: float = 2.0  # mg/dL measurement noise
 
-    # Bolus dosing (kept small to avoid catastrophic hypos when exploring)
-    insulin_action_levels: Tuple[float, ...] = (0.0, 0.5, 1.0, 2.0)  # U bolus options
+    # Micro-corrections to avoid large swings
+    insulin_action_levels: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.4)  # U bolus options
 
     # Normalization for state output
     glucose_scale: float = 300.0
@@ -136,11 +136,18 @@ class HovorkaEnv:
             break
         self.active_carbs += meal_carbs
 
-        # Safety gate: suppress bolus when already low
+        # Safety gate: suppress bolus when already low, cap small doses
         glucose_now = self.prev_glucose
+        safe_action = action
+        if glucose_now < 90.0:
+            safe_action = 0
+        elif glucose_now < 140.0:
+            safe_action = min(action, 1)  # up to 0.1 U
+        elif glucose_now < 200.0:
+            safe_action = min(action, 2)  # up to 0.2 U
+        # else allow up to 0.4 U
 
-        # Bolus (no hard gating; let the policy learn, reward will discourage hypo)
-        bolus_units = p.insulin_action_levels[action]
+        bolus_units = p.insulin_action_levels[safe_action]
         self.S1 += bolus_units
 
         dt = p.dt
@@ -206,11 +213,11 @@ class HovorkaEnv:
         """
         p = self.params
         deviation = abs(glucose - p.target_glucose)
-        reward = -deviation / 60.0  # base deviation cost
+        reward = -deviation / 80.0  # base deviation cost softened
 
         # In-range bonus
         if 90 <= glucose <= 140:
-            reward += 2.0
+            reward += 3.0
         elif 80 <= glucose <= 160:
             reward += 1.0
 
@@ -218,25 +225,25 @@ class HovorkaEnv:
         if glucose > 180 and delta_glucose > 0:
             reward -= 1.0
         if glucose < 90 and delta_glucose < 0:
-            reward -= 2.0
+            reward -= 3.0
 
         # Hypo penalties (strong)
         if glucose < 70:
-            reward -= 10.0
+            reward -= 20.0
         elif glucose < 80:
-            reward -= 3.0
+            reward -= 8.0
 
         # Hyper penalties (softer)
         if glucose > 180:
-            reward -= 1.0
+            reward -= 0.5
         if glucose > 250:
-            reward -= 2.0
+            reward -= 1.0
         if glucose > 300:
-            reward -= 4.0
+            reward -= 2.0
 
         # Action cost: discourage insulin when already below target
         if glucose < p.target_glucose:
-            reward -= 0.05 * action
+            reward -= 0.2 * action
         else:
             reward -= 0.005 * action
         return reward
