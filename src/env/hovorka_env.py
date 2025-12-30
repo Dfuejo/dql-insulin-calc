@@ -51,6 +51,7 @@ class HovorkaParams:
 
     # Micro-corrections to avoid large swings
     insulin_action_levels: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.4)  # U bolus options
+    carb_ratio: float = 10.0  # g/U for meal bolus heuristic
 
     # Normalization for state output
     glucose_scale: float = 300.0
@@ -148,6 +149,14 @@ class HovorkaEnv:
         # else allow up to 0.4 U
 
         bolus_units = p.insulin_action_levels[safe_action]
+        # Meal bolus heuristic to cover announced carbs conservatively
+        if meal_carbs > 0:
+            meal_bolus = meal_carbs / p.carb_ratio
+            if glucose_now < 100.0:
+                meal_bolus = 0.0
+            elif glucose_now < 140.0:
+                meal_bolus *= 0.75
+            bolus_units += meal_bolus
         self.S1 += bolus_units
 
         dt = p.dt

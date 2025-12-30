@@ -231,6 +231,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
         "tbr": [],
         "tor": [],
         "interval_stats": [],
+        "episode_lengths": [],
     }
 
     global_step = 0
@@ -323,6 +324,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
         # End of episode, log metrics
 
         history["episode_rewards"].append(episode_reward)
+        history["episode_lengths"].append(len(glucose_trace))
         metrics = compute_range_metrics(glucose_trace, target_low=config.target_low, target_high=config.target_high)
         history["tir"].append(metrics["tir"])
         history["tbr"].append(metrics["tbr"])
@@ -340,6 +342,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
                 else 0.0
             )
             var_tir = np.var(history["tir"][-config.log_interval :]) if len(history["tir"]) >= config.log_interval else 0.0
+            mean_len = np.mean(history["episode_lengths"][-config.log_interval :]) if history["episode_lengths"] else 0.0
             history["interval_stats"].append(
                 {
                     "episode": episode,
@@ -350,6 +353,7 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
                     "mean_tbr": float(avg_tbr),
                     "mean_tor": float(avg_tor),
                     "epsilon": float(exp_epsilon(global_step, config)),
+                    "mean_len": float(mean_len),
                 }
             )
             print(
@@ -357,7 +361,8 @@ def train_dqn(env, config: DQNConfig) -> Tuple[DQNAgent, Dict[str, List[float]]]
                 f"avg reward: {avg_reward:.3f} | "
                 f"TIR/TBR/TOR: {avg_tir:.2f}/{avg_tbr:.2f}/{avg_tor:.2f} | "
                 f"epsilon: {exp_epsilon(global_step, config):.3f} | "
-                f"buffer: {len(buffer)}"
+                f"buffer: {len(buffer)} | "
+                f"mean steps: {mean_len:.1f}"
             )
 
     return agent, history
