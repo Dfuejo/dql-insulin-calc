@@ -59,6 +59,32 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to save policy network state_dict after training.",
     )
+    parser.add_argument(
+        "--save-best",
+        type=str,
+        default=None,
+        help="Optional path to save a 'best' policy (here, last policy as placeholder).",
+    )
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=0,
+        help="Ignored placeholder for compatibility; periodic eval not implemented.",
+    )
+    parser.add_argument(
+        "--eval-patients",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Ignored placeholder; held-out patients not used in this build.",
+    )
+    parser.add_argument(
+        "--eval-seeds",
+        type=int,
+        nargs="*",
+        default=None,
+        help="Ignored placeholder; held-out seeds not used in this build.",
+    )
     return parser.parse_args()
 
 
@@ -154,6 +180,10 @@ def main() -> None:
     if args.save_checkpoint:
         save_policy(agent, args.save_checkpoint)
         print(f"Saved policy checkpoint to {args.save_checkpoint}")
+    if args.save_best:
+        # Placeholder: save the last policy as "best"
+        save_policy(agent, args.save_best)
+        print(f"Saved best policy (last) to {args.save_best}")
 
 
 if __name__ == "__main__":
