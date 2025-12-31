@@ -43,10 +43,10 @@ class HovorkaParams:
 
     # Simulation settings
     dt: float = 5.0  # minutes per step
-    max_steps: int = 288  # 24h at 5-min steps (can extend for longer horizons)
+    max_steps: int = 120  # shorter horizon (~10h at 5-min steps)
     target_glucose: float = 110.0  # mg/dL
     min_glucose: float = 40.0
-    max_glucose: float = 400.0
+    max_glucose: float = 450.0  # relaxed upper bound (align with high observed in Ohio data)
     noise_std: float = 2.0  # mg/dL measurement noise
 
     # Micro-corrections to avoid large swings
