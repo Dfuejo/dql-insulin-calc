@@ -1,4 +1,5 @@
-# RL Insulin Calculator
+# Deep Q-learning for Insuline Control for
+Type I Diabetes
 
 Reinforcement Learning project for insulin decision-making in Type 1 Diabetes
 using synthetic environments (toy and Hovorka).
